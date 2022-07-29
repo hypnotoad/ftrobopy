@@ -2,7 +2,7 @@
 ***********************************************************************
 **ftrobopy** - Ansteuerung des fischertechnik TXT Controllers in Python
 ***********************************************************************
-(c) 2015, 2016, 2017, 2018, 2019, 2020 by Torsten Stuehn
+(c) 2015, 2016, 2017, 2018, 2019, 2020, 2021 by Torsten Stuehn
 """
 
 from __future__ import print_function
@@ -22,14 +22,14 @@ except:
   pass
 
 __author__      = "Torsten Stuehn"
-__copyright__   = "Copyright 2015 - 2020 by Torsten Stuehn"
+__copyright__   = "Copyright 2015 - 2021 by Torsten Stuehn"
 __credits__     = "fischertechnik GmbH"
 __license__     = "MIT License"
-__version__     = "1.94"
+__version__     = "1.99"
 __maintainer__  = "Torsten Stuehn"
 __email__       = "stuehn@mailbox.org"
-__status__      = "beta"
-__date__        = "06/26/2020"
+__status__      = "stable"
+__date__        = "12/04/2021"
 
 try:
   xrange
@@ -141,6 +141,15 @@ class ftTXT(object):
       :param on_error: Errorhandler fuer Fehler bei der Kommunikation mit dem Controller (optional)
       :type port: function(str, Exception) -> bool
 
+      :param directmode: Default: False. Direkte serielle Kommunikation zwischen TXT Linux-Platine und Motorplatine unter Umgehung der Socket-Schnittstelle (nur sinnvoll in der CFW im offline Modus)
+      :type boolean:
+
+      :param use_extension: Default: False. Erlaubt einen zweiten TXT-Kontroller am Extension Port.
+      :type boolean:
+
+      :param use_TransferAreaMode: Default False. Verwendet eine shared-Memory Methode (TransferAreaMode) zum Datenaustausch mit der Motorplatine (nur sinnvoll im Offline Modus)
+      :type boolean:
+
 
       :return: Leer
 
@@ -175,6 +184,9 @@ class ftTXT(object):
         print("Error: Transfer Area could not be initialized! Please check if ftTA2py.so exists.")
         sys.exit(-1)
     elif self._directmode:
+      if use_extension:
+        print("Error: direct-mode does currently not support TXT slave extensions.")
+        sys.exit(-1)
       import serial
       self._ser_ms     = serial.Serial(self._ser_port, 230000, timeout=1)
       self._sock       = None
@@ -296,6 +308,7 @@ class ftTXT(object):
     self._current_reference_power = 0
     self._current_extension_power = 0
     self._debug                   = []
+    self._firstUpdateConfig       = [True, True]
     self._exchange_data_lock.release() 
 
   def stopTransferArea(self):
@@ -327,10 +340,10 @@ class ftTXT(object):
       # TODO
       # not sure how to detect version yet, just set standard value
       self._m_devicename = 'TXT TransferAreaMode'
-      self._m_version    =  0x4060600
+      self._m_version    = 0x4060600
       self._m_firmware   = 'firmware version not detected'
       return self._m_devicename, self._m_version
-    if self._directmode:
+    elif self._directmode:
       # not sure how to detect version yet, just set standard value
       self._m_devicename = 'TXT direct'
       self._m_version    =  0x4010500
@@ -593,6 +606,9 @@ class ftTXT(object):
       if response_id != m_resp_id:
         self.handle_error('WARNING: ResponseID %s of startOnline command does not match' % hex(response_id), None)
       else:
+        self.updateConfig(self.C_EXT_MASTER)
+        if self._use_extension:
+          self.updateConfig(self.C_EXT_SLAVE)
         self._txt_thread = ftTXTexchange(txt=self, sleep_between_updates=update_interval, stop_event=self._txt_stop_event)
         self._txt_thread.setDaemon(True)
         self._txt_thread.start()
@@ -748,10 +764,11 @@ class ftTXT(object):
     if self._directmode:
       # in direct mode i/o port configuration is performed automatically in exchangeData thread
       return
-    if not self.isOnline():
-      self.handle_error("Controller must be online before updateConfig() is called", None)
-      return
-    #print("updateConfig ext=",ext)
+    if not self._firstUpdateConfig[ext]:
+      if not self.isOnline():
+        self.handle_error("Controller must be online before updateConfig() is called", None)
+        return
+      self._firstUpdateConfig[ext] = False
     m_id       = 0x060EF27E
     m_resp_id  = 0x9689A68C
     self._config_id[ext] += 1
@@ -1407,11 +1424,12 @@ class ftTXT(object):
       if idx != None:
         ret = ftTA2py.fX1in_uni(ext, idx)
       else:
-        ret = [ftTA2py.fX1in_uni(ext, 0), ftTA2py.fX1in_uni(ext, 1), ftTA2py.fX1in_uni(ext, 2), ftTA2py.fX1in_uni(ext, 3)]
-    if idx != None:
-      ret=self._current_input[8*ext+idx]
+        ret = [ftTA2py.fX1in_uni(ext, 0), ftTA2py.fX1in_uni(ext, 1), ftTA2py.fX1in_uni(ext, 2), ftTA2py.fX1in_uni(ext, 3), ftTA2py.fX1in_uni(ext, 4), ftTA2py.fX1in_uni(ext, 5), ftTA2py.fX1in_uni(ext, 6), ftTA2py.fX1in_uni(ext, 7) ]
     else:
-      ret=self._current_input[8*ext:8*ext+8]
+      if idx != None:
+        ret=self._current_input[8*ext+idx]
+      else:
+        ret=self._current_input[8*ext:8*ext+8]
     return ret
 
   def getCurrentCounterInput(self, idx=None, ext=C_EXT_MASTER):
@@ -1440,10 +1458,11 @@ class ftTXT(object):
         ret = ftTA2py.fX1in_cnt_in(ext, idx)
       else:
         ret = [ftTA2py.fX1in_cnt_in(ext, 0), ftTA2py.fX1in_cnt_in(ext, 1), ftTA2py.fX1in_cnt_in(ext, 2),ftTA2py.fX1in_cnt_in(ext, 3)]
-    if idx != None:
-      ret=self._current_counter[4*ext+idx]
     else:
-      ret=self._current_counter[4*ext:4*ext+4]
+      if idx != None:
+        ret=self._current_counter[4*ext+idx]
+      else:
+        ret=self._current_counter[4*ext:4*ext+4]
     return ret
 
   def getCurrentCounterValue(self, idx=None, ext=C_EXT_MASTER):
@@ -1469,10 +1488,11 @@ class ftTXT(object):
         ret = ftTA2py.fX1in_counter(ext, idx)
       else:
         ret = [ftTA2py.fX1in_counter(ext, 0), ftTA2py.fX1in_counter(ext, 1), ftTA2py.fX1in_counter(ext, 2),ftTA2py.fX1in_counter(ext, 3)]
-    if idx != None:
-      ret=self._current_counter_value[4*ext+idx]
     else:
-      ret=self._current_counter_value[4*ext:4*ext+4]
+      if idx != None:
+        ret=self._current_counter_value[4*ext+idx]
+      else:
+        ret=self._current_counter_value[4*ext:4*ext+4]
     return ret
 
   def getCurrentCounterCmdId(self, idx=None, ext=C_EXT_MASTER):
@@ -1498,10 +1518,11 @@ class ftTXT(object):
         ret = ftTA2py.fX1in_cnt_reset_cmd_id(ext, idx)
       else:
         ret = [ftTA2py.fX1in_cnt_reset_cmd_id(ext, 0), ftTA2py.fX1in_cnt_reset_cmd_id(ext, 1), ftTA2py.fX1in_cnt_reset_cmd_id(ext, 2),ftTA2py.fX1in_cnt_reset_cmd_id(ext, 3)]
-    if idx != None:
-      ret=self._current_counter_cmd_id[4*ext+idx]
     else:
-      ret=self._current_counter_cmd_id[4*ext:4*ext+4]
+      if idx != None:
+        ret=self._current_counter_cmd_id[4*ext+idx]
+      else:
+        ret=self._current_counter_cmd_id[4*ext:4*ext+4]
     return ret
 
   def getCurrentMotorCmdId(self, idx=None, ext=C_EXT_MASTER):
@@ -1526,10 +1547,11 @@ class ftTXT(object):
         ret = ftTA2py.fX1in_motor_ex_cmd_id(ext, idx)
       else:
         ret = [ftTA2py.fX1in_motor_ex_cmd_id(ext, 0), ftTA2py.fX1in_motor_ex_cmd_id(ext, 1), ftTA2py.fX1in_motor_ex_cmd_id(ext, 2),ftTA2py.fX1in_motor_ex_cmd_id(ext, 3)]
-    if idx != None:
-      ret=self._current_motor_cmd_id[4*ext+idx]
     else:
-      ret=self._current_motor_cmd_id[4*ext:4*ext+4]
+      if idx != None:
+        ret=self._current_motor_cmd_id[4*ext+idx]
+      else:
+        ret=self._current_motor_cmd_id[4*ext:4*ext+4]
     return ret
 
   def getCurrentSoundCmdId(self, ext=C_EXT_MASTER):
@@ -1572,7 +1594,7 @@ class ftTXT(object):
     """
     return self._port
   
-  def getPower(self):
+  def getPower(self, ext=C_EXT_MASTER):
     """
     Liefert die aktuelle Spannung der angeschlossenen Stromversorgung des TXT in mV (Netzteil- oder Batterie-Spannung).
     
@@ -1585,13 +1607,15 @@ class ftTXT(object):
     >>>   print("Warnung: die Batteriespannung des TXT ist schwach. Bitte die Batterie umgehend austauschen !")
     
     """
-    if self._directmode:
+    if self._use_TransferMode:
+      return ftTA2py.TxtPowerSupply(ext)
+    elif self._directmode:
       return self._current_power
     else:
       print("Diese Funktion steht nur im 'direct'-Modus zur Verfuegung.")
       return None
 
-  def getTemperature(self):
+  def getTemperature(self, ext=C_EXT_MASTER):
     """
     Liefert die aktuelle Temperatur der CPU des TXT (Einheit: ?) zurueck.
     
@@ -1603,6 +1627,8 @@ class ftTXT(object):
     >>> print("Die Temperatur im innern des TXT betraegt: ", Temperatur, " (Einheit unbekannt)")
     
     """
+    if self._use_TransferMode:
+      return ftTA2py.TxtCPUTemperature(ext)
     if self._directmode:
       return self._current_temperature
     else:
@@ -1657,7 +1683,7 @@ class ftTXT(object):
       >>> lampe1.setLevel(512)
       >>> SyncDataEnd()
     """
-    if self._use_TransferArea:
+    if self._use_TransferAreaMode:
       return
     self._exchange_data_lock.acquire()
 
@@ -1667,7 +1693,7 @@ class ftTXT(object):
 
       Anwendungsbeispiel siehe SyncDataBegin()
     """
-    if self._use_TransferArea:
+    if self._use_TransferAreaMode:
       return
     self._exchange_data_lock.release()
 
@@ -1954,7 +1980,8 @@ class ftTXTexchange(threading.Thread):
     self._previous_response = [0 for i in range(84)]
     self._previous_crc = self._crc0
     self._recv_crc0 = 0x628ebb05
-    self._previous_recv_crc = self._recv_crc0
+    self._recv_crc = self._recv_crc0
+    self._prev_recv_crc = self._recv_crc
     return
   
   def run(self):
@@ -2342,6 +2369,7 @@ class ftTXTexchange(threading.Thread):
             # for now use same sound as for MASTER
             uncbuf += [self._txt._sound[1], self._txt._sound_index[1], self._txt._sound_repeat[1]]
             self._txt._exchange_data_lock.release()
+            #print(uncbuf)
             # compress buffer
             self.compBuffer.Reset()
             for i in range(len(uncbuf)):
@@ -2388,70 +2416,54 @@ class ftTXTexchange(threading.Thread):
             return
           #print("retbuf=",','.join(format(ord(x),'4d') for x in retbuf))
           # head of response is uncompressed
-          resphead    = struct.unpack('<IIIHH', retbuf[:16])
-          response_id = resphead[0]
-          extra_size  = resphead[1] # size of compressed data
-          m_crc       = resphead[2] # CRC32 checksum of compressed data
-          nr_ext      = resphead[3] # number of active extensions
-          dmy_align   = resphead[4] # dummy align
+          self._prev_recv_crc = self._recv_crc # save previous checksum 
+          resphead       = struct.unpack('<IIIHH', retbuf[:16])
+          response_id    = resphead[0]
+          extra_size     = resphead[1] # size of compressed data
+          self._recv_crc = resphead[2] # CRC32 checksum of compressed data
+          nr_ext         = resphead[3] # number of active extensions
+          #dmy_align      = resphead[4] # dummy align
           if response_id != m_resp_id:
             print('ResponseID ', hex(response_id),' of exchangeData command in exchange thread does not match')
             print('Connection to TXT aborted')
             self._txt_stop_event.set()
             return
-          if self._previous_recv_crc != m_crc:
+          #response=[response_id]
+          if self._prev_recv_crc != self._recv_crc:
             # uncompress body of response
-            self._previous_recv_crc = m_crc
             self.compBuffer.Reset()
             self.compBuffer.m_compressed=retbuf[16:]
-            response=[response_id]
-            #print("unpacked:",response[1:])
+            response = list(map(lambda x: self.compBuffer.GetWord(), range(77)))
+            #print(self._recv_crc, response)
             self._txt._exchange_data_lock.acquire()
-            for i in range(80):
-              d = self.compBuffer.GetWord()
-              if d != 0:
-                if (d == 1) and (self._previous_response[i+1] != 0):
-                  d = 0
-                # MASTER
-                if   i<8:
-                  self._txt._current_input[i] = d
-                elif i<12:
-                  self._txt._current_counter[i-8] = d
-                elif i<16:
-                  self._txt._current_counter_value[i-12] = d
-                elif i<20:
-                  self._txt._current_counter_cmd_id[i-16] = d
-                elif i<24:
-                  self._txt._current_motor_cmd_id[i-20] = d
-                elif i<25:
-                  self._txt._current_sound_cmd_id[0] = d
-                elif i<52:
-                  self._txt._current_ir[i-25] = d
-                # EXTENSION
-                elif i<60:
-                  self._txt._current_input[i-44] = d
-                elif i<64:
-                  self._txt._current_counter[i-56] = d
-                elif i<68:
-                  self._txt._current_counter_value[i-60] = d
-                elif i<72:
-                  self._txt._current_counter_cmd_id[i-64] = d
-                elif i<76:
-                  self._txt._current_motor_cmd_id[i-68] = d
-                elif i<77:
-                  self._txt._current_sound_cmd_id[1] = d
-                else:
-                  pass # extension does not provide ir input data
-                  
-              response.append(d)
-              
-            self._previous_response = response[:]
-              
+
+            def conv_null(a,b):
+              return [a[i] if b[i]==0 else 0 if (b[i]==1 and a[i]==1) else 1 if (b[i]==1 and a[i]==0) else b[i] for i in range(len(b))]
+
+
+            # MASTER
+            self._txt._current_input[:8]          = conv_null(self._txt._current_input[:8], response[:8])
+            self._txt._current_counter[:4]        = conv_null(self._txt._current_counter[:4], response[8:12])
+            self._txt._current_counter_value[:4]  = conv_null(self._txt._current_counter_value[:4], response[12:16])
+            self._txt._current_counter_cmd_id[:4] = conv_null(self._txt._current_counter_cmd_id[:4], response[16:20])
+            self._txt._current_motor_cmd_id[:4]   = conv_null(self._txt._current_motor_cmd_id[:4], response[20:24])
+            self._txt._current_sound_cmd_id[0]    = conv_null([self._txt._current_sound_cmd_id[0]], [response[24]])[0]
+            #self._txt._current_ir[:26]            = conv_null(self._txt._current_ir[:26], response[25:52])
+            # EXTENSION
+            self._txt._current_input[8:]          = conv_null(self._txt._current_input[8:], response[52:60])
+            self._txt._current_counter[4:]        = conv_null(self._txt._current_counter[4:], response[60:64])
+            self._txt._current_counter_value[4:]  = conv_null(self._txt._current_counter_value[4:], response[64:68])
+            self._txt._current_counter_cmd_id[4:] = conv_null(self._txt._current_counter_cmd_id[4:], response[68:72])
+            self._txt._current_motor_cmd_id[4:]   = conv_null(self._txt._current_motor_cmd_id[4:], response[72:76])
+            #self._txt._current_sound_cmd_id[1]    = conv_null([self._txt._current_sound_cmd_id[1]], [response[76]])
+            # last 3 are not used
+            #dummy                             = response[77:80]
+
             self._txt.handle_data(self._txt)
             self._txt._exchange_data_lock.release()
             #end_time=time.time()
             #print("time=",end_time-start_time)
-
+          
         else:
           m_id          = 0xCC3597BA
           m_resp_id     = 0x4EEFAC41
@@ -2713,6 +2725,14 @@ class ftrobopy(ftTXT):
       :param special_connection: IP-Adresse des TXT, falls dieser ueber einen Router im WLAN-Netz angesprochen wird (z.B. '10.0.2.7')
       :type special_connection: string
 
+      :param use_extension: Default: False. Erlaubt einen zweiten TXT-Kontroller am Extension Port.
+      :type boolean:
+
+      :param use_TransferAreaMode: Default False. Verwendet eine shared-Memory Methode (TransferAreaMode) zum Datenaustausch mit der Motorplatine (nur sinnvoll im Offline Modus)
+      :type boolean:
+
+
+
       :return: Leer
       
       Anwedungsbeispiel:
@@ -2805,9 +2825,9 @@ class ftrobopy(ftTXT):
     for i in range(n):
       self.setPwm(i,0)
     self.startOnline(update_interval)
-    self.updateConfig(ftTXT.C_EXT_MASTER)
-    if (use_extension):
-      self.updateConfig(ftTXT.C_EXT_SLAVE)
+    #self.updateConfig(ftTXT.C_EXT_MASTER)
+    #if (use_extension):
+    #  self.updateConfig(ftTXT.C_EXT_SLAVE)
 
   def __del__(self):
     if self._txt_is_initialized:
@@ -2866,17 +2886,25 @@ class ftrobopy(ftTXT):
 
       Laesst den Motor mit maximaler Umdrehungsgeschwindigkeit laufen.
 
-      **setDistance** (distance, syncto=None)
+      **setDistance** (distance, syncto=None, sn=None)
       
       Einstellung der Motordistanz, die ueber die schnellen Counter gemessen wird, die dafuer natuerlich angeschlossen
       sein muessen.
       
-      :param distance: Gibt an, um wieviele Counter-Zaehlungen sich der Motor drehen soll (der Encodermotor gibt 72 Impulse pro Achsumdrehung)
+      :param distance: Gibt an, um wieviele Counter-Zaehlungen sich der Motor drehen soll.
+                       (Der Encodermotor des TXTs gibt 190 Impulse pro 3 Achsumdrehungen, also 63 1/3 pro Umlauf)
+                       (Der Encodermotor des TX gibt 72 Impulse pro Umlauf)
       :type distance: integer
       
       :param syncto: Hiermit koennen zwei Motoren synchronisiert werden um z.B. perfekten Geradeauslauf
                      zu ermoeglichen. Als Parameter wird hier das zu synchronisierende Motorobjekt uebergeben.
       :type syncto: ftrobopy.motor Objekt
+      
+      :param sn: Um mit synchronisierten Motoren Kurven fahren zu koennen, ist es mit diesem Parameter moeglich,
+                 einen Counter (waehrend der Synchronfahrt) gezielt zu manipulieren.
+                 Als Parameter wird hier die Nummer des synchronisierten Motoreingangs uebergeben.
+                 Der Wert des Distanz-Parameters wird in diesem Fall auf den Counter aufaddiert (oder subtrahiert, je nach Vorzeichen)
+      :type sn: integer
       
       :return: Leer
       
@@ -2941,7 +2969,7 @@ class ftrobopy(ftTXT):
           self._outer.setPwm((self._output-1)*2, 0, self._ext)
           self._outer.setPwm((self._output-1)*2+1, -self._speed, self._ext)
         self._outer._exchange_data_lock.release()
-      def setDistance(self, distance, syncto=None):
+      def setDistance(self, distance, syncto=None, sn=None):
         self._outer._exchange_data_lock.acquire()
         if syncto:
           self._distance     = distance
@@ -2954,6 +2982,12 @@ class ftrobopy(ftTXT):
           self._outer.setMotorSyncMaster(syncto._output-1, 4*self._ext + self._output, self._ext)
           self._outer.incrMotorCmdId(self._output-1, self._ext)
           self._outer.incrMotorCmdId(syncto._output-1, self._ext)
+        elif sn:
+          self._distance     = distance
+          self._command_id   = self._outer.getCurrentMotorCmdId(self._output-1, self._ext)
+          self._outer.setMotorDistance(self._output-1, distance, self._ext)
+          self._outer.setMotorSyncMaster(self._output-1, sn, self._ext)
+          self._outer.incrMotorCmdId(self._output-1, self._ext)
         else:
           self._distance     = distance
           self._command_id   = self._outer.getCurrentMotorCmdId(self._output-1, self._ext)
@@ -2977,8 +3011,6 @@ class ftrobopy(ftTXT):
     M, I = self.getConfig(ext)
     M[output-1] = ftTXT.C_MOTOR
     self.setConfig(M, I, ext)
-    if self._use_TransferAreaMode:
-      pass
     self.updateConfig(ext)
     if wait:
       self.updateWait()
@@ -3025,8 +3057,6 @@ class ftrobopy(ftTXT):
     M, I = self.getConfig(ext)
     M[int((num-1)/2)] = ftTXT.C_OUTPUT
     self.setConfig(M, I, ext)
-    if self._use_TransferAreaMode:
-      pass
     self.updateConfig(ext)
     if wait:
       self.updateWait()
